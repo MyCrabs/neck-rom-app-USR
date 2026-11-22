@@ -2,103 +2,105 @@
 
 **頸部活動度自我檢測**：本程式只使用一般筆電的網路攝影機，透過 MediaPipe 臉部與姿勢偵測估算頭部角度，引導長者完成六個頸部動作（前屈、後仰、左右側彎、左右轉），並測量頸椎活動度（CROM）。系統同時偵測肩膀，若長者以轉動身體來代償，會即時提醒「請保持肩膀不動」，並在結果中分別顯示校正前與校正後的角度。
 
-> ⚠️ **非醫療診斷設備**：本系統僅供頸部活動度自我追蹤參考。如有疼痛請立即停止。
+> ⚠️ **非醫療診斷設備 / Not a medical diagnostic device.** For self-monitoring of neck mobility only. Stop immediately if it hurts.
+
+This program uses an ordinary laptop webcam to measure cervical range of motion (CROM). It estimates head pose with MediaPipe, guides the user through six neck movements (flexion, extension, left/right lateral flexion, left/right rotation) and reports the maximum angle of each one. It also tracks the shoulders. If the user turns their trunk to compensate (common in older adults with a stiff neck), the program warns them in real time ("請保持肩膀不動") and reports both the uncorrected and the trunk-corrected neck angle.
 
 ---
 
-## 1. Cài đặt
+## 1. Installation
 
-Python **3.10–3.12** là an toàn nhất cho mediapipe (đã chạy với 3.11 + mediapipe 1.2.3 trên Windows 11).
+Python **3.10–3.12** is the safest choice for mediapipe (tested with 3.11 + mediapipe 1.2.3 on Windows 11).
 
 ```bash
 python -m venv .venv
 # Windows:      .venv\Scripts\activate
 # macOS/Linux:  source .venv/bin/activate
 pip install -r requirements.txt pytest
-python download_models.py        # tải face_landmarker.task + pose_landmarker_lite.task vào models/
+python download_models.py        # downloads face_landmarker.task + pose_landmarker_lite.task into models/
 ```
 
-macOS: lần đầu chạy phải cấp quyền Camera cho Terminal / VS Code (System Settings → Privacy & Security → Camera).
+macOS: the first time you run it, grant Camera permission to Terminal / VS Code (System Settings → Privacy & Security → Camera).
 
-## 2. Chạy
+## 2. Running
 
 ```bash
-python run.py                              # webcam 0, tiếng Trung
-python run.py --user ba_noi                # mỗi người lớn tuổi một tên -> data/ba_noi/
-python run.py --camera 1                   # webcam khác
-python run.py --lang en                    # giao diện tiếng Anh
-python run.py --log-csv out/log.csv        # log từng frame (để so với IMU điện thoại)
-python run.py --save-screens out/          # lưu ảnh từng bước + màn kết quả (làm slide)
+python run.py                              # webcam 0, Traditional Chinese UI
+python run.py --user grandma               # one name per older adult -> data/grandma/
+python run.py --camera 1                   # another webcam
+python run.py --lang en                    # English UI
+python run.py --log-csv out/log.csv        # per-frame log (for comparison with a phone IMU)
+python run.py --save-screens out/          # save a screenshot of each step + the result screen (for slides)
 ```
 
-Các tham số khác: `--video file.mp4` (thay webcam), `--auto` (tự bắt đầu sau 1 giây), `--headless` (không mở cửa sổ), `--no-pose` (tắt bù thân), `--no-mirror` (không lật gương), `--font path.ttc` (font CJK khác).
+Other options: `--video file.mp4` (use a video instead of the webcam), `--auto` (start automatically after 1 s), `--headless` (no window), `--no-pose` (disable trunk compensation), `--no-mirror` (do not mirror the display), `--font path.ttc` (use a different CJK font).
 
-### Phím tắt
+### Keys
 
-| Phím | Chức năng |
+| Key | Action |
 |---|---|
-| SPACE | Bắt đầu / bước tiếp / kết thúc đo sớm / về màn home (ở màn kết quả) |
-| S | Bỏ qua động tác hiện tại |
-| C | Hiệu chỉnh lại tư thế trung tính (rồi làm tiếp động tác hiện tại) |
-| R | Đo lại từ đầu |
-| H | Lịch sử (ở màn home / kết quả) |
-| L | Đổi Trung ↔ Anh |
-| F | Toàn màn hình |
-| Q / ESC | Thoát |
+| SPACE | Start / next step / end the measurement early / back to home (on the result screen) |
+| S | Skip the current movement |
+| C | Recalibrate the neutral pose (then continue with the current movement) |
+| R | Measure again from the start |
+| H | History (on the home / result screen) |
+| L | Switch Chinese ↔ English |
+| F | Fullscreen |
+| Q / ESC | Quit |
 
-### Luồng đo
+### Measurement flow
 
-Hiệu chỉnh: nhìn thẳng 3 giây chuẩn bị + 2 giây đứng yên (đầu rung > 3° hoặc mất mặt thì tự hiệu chỉnh lại). Sau đó mỗi động tác: chuẩn bị 3s → đo 7s (lấy góc lớn nhất) → về giữa 2.5s. Kết quả lưu ở `data/<user>/<thời gian>.json`, gồm `rom_head` (góc đầu sau lọc), `rom_head_raw`, `rom_neck` (đã trừ thân), `max_trunk`, `compensation`, số frame hợp lệ.
+Calibration: look straight ahead for a 3 s preparation and then hold still for 2 s. If the head moves more than 3° or the face is lost, calibration restarts automatically. Then, for each movement: prepare 3 s → measure 7 s (the maximum angle is kept) → return to center 2.5 s. Results are saved to `data/<user>/<timestamp>.json` with `rom_head` (filtered head angle), `rom_head_raw`, `rom_neck` (trunk subtracted), `max_trunk`, `compensation` and the number of valid frames.
 
-## 3. Kiểm tra dấu góc (việc đầu tiên khi chạy webcam thật)
+## 3. Checking the angle signs (do this first with a real webcam)
 
-Ở màn home, góc phải trên hiện `yaw / pitch / roll` và `肩膀 yaw / roll`. Sau khi hiệu chỉnh (hoặc ngay ở home, giá trị tuyệt đối):
+On the home screen, the top-right corner shows `yaw / pitch / roll` and `肩膀 yaw / roll` (shoulders). Check after calibrating (or directly on the home screen, using the absolute values):
 
-- quay đầu sang **trái thật** (của người được đo) → **yaw dương**
-- **ngửa** lên → **pitch dương**
-- **tai trái về vai trái** → **roll dương**
-- xoay **vai trái ra sau** → `肩膀` yaw dương; **nghiêng thân sang trái** → `肩膀` roll dương
+- turn the head to the subject's **own left** → **yaw positive**
+- look **up** → **pitch positive**
+- **left ear towards left shoulder** → **roll positive**
+- **left shoulder moves back** → shoulder yaw positive; **lean the trunk to the left** → shoulder roll positive
 
-Sai trục nào thì đổi dấu đúng trục đó trong `angles_from_matrix` (hoặc `trunk_angles`) ở **`neck_rom/geometry.py`**, không sửa chỗ khác.
+If an axis has the wrong sign, flip the sign of that axis only, in `angles_from_matrix` (or `trunk_angles`) in **`neck_rom/geometry.py`**. Do not change it anywhere else.
 
-**Đã kiểm tra tự động (22/11/2026):**
-- `pytest`: 24 test qua (khứ hồi góc ↔ ma trận, ý nghĩa vật lý của từng dấu với landmark giả, hiệu chỉnh khi ngồi lệch 15°, dấu vai, luồng 6 động tác với dữ liệu giả có bù thân).
-- Video tổng hợp (`tools/make_test_video.py`, ảnh `portrait.jpg` xoay ±25° trong mặt phẳng ảnh): `--no-pose` cho tilt trái 24.6°, tilt phải 25.0°, nên **dấu roll của đầu đúng**. Có Pose thì vai xoay cùng ảnh, app báo `compensation=True`, thân khoảng 17°, nên **dấu trunk_roll cũng đúng**.
-- **Chưa kiểm tra:** dấu yaw/pitch với người thật trước webcam, và độ ổn định của `trunk_yaw` (trên video tĩnh nó dao động khoảng ±3–4°).
+**Automated checks done (2026-11-22):**
+- `pytest`: 24 tests pass. They cover the angle ↔ matrix round trip, the physical meaning of every sign with synthetic landmarks, calibration while sitting 15° off-axis, the shoulder signs, and the 6-movement flow with synthetic data including trunk compensation.
+- Synthetic video (`tools/make_test_video.py`, `portrait.jpg` rotated ±25° in the image plane): with `--no-pose`, tilt left = 24.6° and tilt right = 25.0°, so **the head roll sign is correct**. With Pose enabled the shoulders rotate together with the image, and the app reports `compensation=True` with about 17° of trunk movement, so **the trunk_roll sign is correct too**.
+- **Not yet checked:** the yaw/pitch signs with a real person in front of the webcam, and the stability of `trunk_yaw` (it fluctuates by about ±3–4° on a still video).
 
-## 4. Test
+## 4. Tests
 
 ```bash
-pytest -q                                            # không cần webcam
-python tools/make_test_video.py                      # tạo test.mp4 (84 s)
+pytest -q                                            # no webcam needed
+python tools/make_test_video.py                      # creates test.mp4 (84 s)
 python run.py --video test.mp4 --auto --headless --save-screens out/ --user test
 python run.py --video test.mp4 --auto --headless --no-pose --user test
 ```
 
-Lệnh chạy video in bảng kết quả ra terminal. Nên dùng `--user test` để không lẫn vào lịch sử của người thật. Ngoài ra cả nhóm nên **tự quay một video khoảng 1 phút 30 giây** làm đủ 6 động tác (chạy cùng `--auto`) để test lặp lại và làm video dự phòng cho demo.
+The video runs print a results table in the terminal. Use `--user test` so test runs do not mix with a real person's history. The team should also **record its own video of about 1.5 minutes** doing all 6 movements (run it with `--auto`), both for repeatable testing and as a backup video for the demo.
 
-## 5. Cấu trúc
+## 5. Project layout
 
 ```
-neck_rom/geometry.py   quy ước góc, ma trận đầu từ landmark, góc vai   (chỗ DUY NHẤT để sửa dấu)
+neck_rom/geometry.py   angle convention, head matrix from landmarks, shoulder angles  (the ONLY place to fix signs)
 neck_rom/filters.py    One-Euro filter
 neck_rom/tracker.py    MediaPipe Face + Pose Landmarker (Tasks API, VIDEO mode)
-neck_rom/session.py    hiệu chỉnh, lọc, loại outlier, luồng 6 động tác, ROM, bù thân
-neck_rom/i18n.py       toàn bộ chữ giao diện (zh mặc định, en)
-neck_rom/ui.py         vẽ bằng OpenCV + Pillow (font CJK), màn live / kết quả / lịch sử
-neck_rom/app.py        vòng lặp chính, CLI, phím, lưu JSON, log CSV
-neck_rom/storage.py    lưu / đọc phiên đo
-tools/make_test_video.py  tạo video test từ portrait.jpg
+neck_rom/session.py    calibration, filtering, outlier rejection, 6-movement flow, ROM, trunk compensation
+neck_rom/i18n.py       all UI strings (zh default, en)
+neck_rom/ui.py         drawing with OpenCV + Pillow (CJK font): live / result / history screens
+neck_rom/app.py        main loop, CLI, keys, JSON saving, CSV log
+neck_rom/storage.py    save / load sessions
+tools/make_test_video.py  builds a test video from portrait.jpg
 ```
 
-## 6. Giới hạn
+## 6. Limitations
 
-- **Không phải thiết bị chẩn đoán.** Chỉ để tự theo dõi xu hướng.
-- **Cúi / ngửa chưa bù thân** (cần thấy hông, webcam laptop thường không thấy). Đây là future work.
-- `trunk_yaw` lấy từ `pose_world_landmarks` (độ sâu ước lượng từ ảnh 2D) nên nhiễu hơn `trunk_roll`.
-- Góc đầu dựng từ vài landmark (mắt, trán, cằm), không phải mô hình 3D đầy đủ. Khi quay quá khoảng 60–70°, landmark có thể kém chính xác.
-- **Giá trị tham chiếu** (50/60/45/45/80/80° trong `session.py`) là giá trị thường gặp ở người trưởng thành khỏe mạnh; người cao tuổi thường thấp hơn. **Phải trích nguồn cụ thể** (ví dụ AMA Guides, hoặc một bài review chuẩn theo tuổi) và sửa số nếu cần trước khi đưa lên slide.
-- Nhóm thử nghiệm nhỏ (2–3 người cao tuổi), chưa đủ để kết luận thống kê.
-- **Không commit** dữ liệu `data/` của người cao tuổi lên repo public (`.gitignore` đã loại trừ).
+- **Not a diagnostic device.** It is only meant for tracking trends yourself.
+- **Flexion / extension are not corrected for trunk movement** (that needs the hips in view, which a laptop webcam usually cannot see). This is future work.
+- `trunk_yaw` comes from `pose_world_landmarks` (depth estimated from a 2D image), so it is noisier than `trunk_roll`.
+- The head angle is built from a few landmarks (eyes, forehead, chin), not from a full 3D head model. Beyond about 60–70° of rotation the landmarks can become less accurate.
+- The **reference values** (50/60/45/45/80/80° in `session.py`) are typical values for healthy adults; older adults are usually lower. **Cite a specific source** (e.g. the AMA Guides, or an age-stratified review) and adjust the numbers if needed before putting them on slides.
+- Small test group (2–3 older adults), not enough for statistical conclusions.
+- **Do not commit** the older adults' `data/` to a public repo (`.gitignore` already excludes it).
 
-Paper gốc: Chotikkakamthorn et al., *Computers in Biology and Medicine* 195, 110620 (2025). Model của paper dùng để so sánh độ chính xác offline; demo dùng MediaPipe vì chạy realtime trên CPU laptop thường.
+Original paper: Chotikkakamthorn et al., *Computers in Biology and Medicine* 195, 110620 (2025). The paper's model is used for offline accuracy comparison; the demo uses MediaPipe because it runs in real time on an ordinary laptop CPU.
