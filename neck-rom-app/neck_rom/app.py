@@ -23,6 +23,9 @@ from .tracker import Tracker
 WINDOW = "Neck ROM"   # ASCII: OpenCV window titles do not support Chinese on Windows
 ROOT = Path(__file__).resolve().parent.parent
 LIVE_PHASES = ("prep", "measure", "return")
+# on-screen button id -> the keyboard key it stands for
+BUTTON_KEYS = {"lang": "l", "start": " ", "next": " ", "skip": "s", "history": "h",
+               "again": "r", "home": " "}
 
 
 def parse_args(argv=None):
@@ -154,9 +157,17 @@ def main(argv=None) -> int:
         shots_dir.mkdir(parents=True, exist_ok=True)
     shots_done, n_shots = set(), 0
 
+    clicks: list[tuple[int, int]] = []
+
+    def on_mouse(event, x, y, flags, param):
+        # OpenCV reports image (canvas) coordinates, also when the window is resized
+        if event == cv2.EVENT_LBUTTONDOWN:
+            clicks.append((x, y))
+
     if not args.headless:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WINDOW, U.W, U.H)
+        cv2.setMouseCallback(WINDOW, on_mouse)
     fullscreen = False
     t0 = time.monotonic()
     frame_idx, fails, auto_started = 0, 0, False
@@ -223,42 +234,30 @@ def main(argv=None) -> int:
             key = cv2.waitKey(1) & 0xFF
             if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                 break
-            if key == 255:
-                continue
-            if screen == "history":       # any key: back
-                screen = "live"
-                continue
-            ch = chr(key).lower() if key < 128 else ""
-            if key == 27 or ch == "q":
-                break
-            elif ch == "l":
-                tr.toggle()
-            elif ch == "f":
-                fullscreen = not fullscreen
-                cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN,
-                                      cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
-            elif ch == " ":
-                if flow.phase == "home":
-                    flow.start(now)
-                elif flow.phase == "result":
-                    flow = Flow(proc)
+            # keyboard + mouse clicks -> list of key commands
+            cmds = []
+            if key != 255:
+                cmds.append("esc" if key == 27 else (chr(key).lower() if key < 128 else "?"))
+            while clicks:
+                x, y = clicks.pop(0)
+                if screen == "history":
+                    cmds.append("back")             # click anywhere: back
                 else:
-                    flow.next(now)
-            elif ch == "s":
-                flow.skip(now)
-            elif ch == "c":
-                if flow.phase in ("home", "result"):
-                    flow = Flow(proc)
-                    flow.start(now)
-                else:   # recalibrate, then continue with the current movement
-                    flow.recorder = None
-                    flow._start_calib(now)
-            elif ch == "r":
-                flow = Flow(proc)
-                flow.start(now)
-            elif ch == "h" and flow.phase in ("home", "result"):
-                hist_canvas = ui.render_history(storage.load_sessions(args.user))
-                screen = "history"
+                    bid = ui.hit(x, y)
+                    if bid:
+                        cmds.append(BUTTON_KEYS[bid])
+            quit_app = False
+            for ch in cmds:
+                if screen == "history":       # any key / click: back
+                    screen = "live"
+                    continue
+                if ch in ("esc", "q"):
+                    quit_app = True
+                    break
+                flow, screen, hist_canvas, fullscreen = handle_key(
+                    ch, flow, proc, now, screen, hist_canvas, fullscreen, ui, tr, args)
+            if quit_app:
+                break
     except KeyboardInterrupt:
         pass
     finally:
@@ -274,6 +273,42 @@ def main(argv=None) -> int:
         if flow.results:
             print_summary(flow)
     return 0
+
+
+def handle_key(ch, flow, proc, now, screen, hist_canvas, fullscreen, ui, tr, args):
+    """Apply one key command (from the keyboard or an on-screen button).
+
+    Returns the (possibly new) flow, screen, history canvas and fullscreen state.
+    """
+    if ch == "l":
+        tr.toggle()
+    elif ch == "f":
+        fullscreen = not fullscreen
+        cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN,
+                              cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
+    elif ch == " ":
+        if flow.phase == "home":
+            flow.start(now)
+        elif flow.phase == "result":
+            flow = Flow(proc)
+        else:
+            flow.next(now)
+    elif ch == "s":
+        flow.skip(now)
+    elif ch == "c":
+        if flow.phase in ("home", "result"):
+            flow = Flow(proc)
+            flow.start(now)
+        else:   # recalibrate, then continue with the current movement
+            flow.recorder = None
+            flow._start_calib(now)
+    elif ch == "r":
+        flow = Flow(proc)
+        flow.start(now)
+    elif ch == "h" and flow.phase in ("home", "result"):
+        hist_canvas = ui.render_history(storage.load_sessions(args.user))
+        screen = "history"
+    return flow, screen, hist_canvas, fullscreen
 
 
 if __name__ == "__main__":

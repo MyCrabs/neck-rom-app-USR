@@ -41,6 +41,9 @@ RED = (60, 60, 230)
 ORANGE = (0, 150, 255)
 BLUE = (255, 140, 30)
 ARROW = (0, 230, 255)
+BTN = (110, 75, 40)          # default button (blue-ish)
+BTN_GO = (70, 150, 60)       # start / next (green)
+BTN_DIM = (90, 90, 90)       # skip (grey)
 
 FONT_CANDIDATES = [
     # Windows
@@ -149,6 +152,8 @@ class UI:
                   "     Use --font <path-to-ttc/ttf> or run with --lang en")
         self._fonts: dict[int, ImageFont.FreeTypeFont] = {}
         self._queue: list[tuple] = []
+        # clickable buttons of the last rendered screen: (id, x0, y0, x1, y1), canvas coords
+        self.buttons: list[tuple[str, int, int, int, int]] = []
 
     # ---- text primitives ---------------------------------------------------
     def font(self, size: int):
@@ -247,14 +252,46 @@ class UI:
                 self.text((x0 + bw - pad, ly), ln, size, color, "rm", stroke)
         return y + bh
 
+    def fit_size(self, s: str, size: int, max_w: float, min_size: int = 36) -> int:
+        """Largest font size <= size so that s fits in max_w (for long English titles)."""
+        while size > min_size and self.text_w(s, size) > max_w:
+            size -= 2
+        return size
+
+    # ---- buttons -------------------------------------------------------------
+    def button(self, img, bid: str, x0, y0, x1, y1, label: str, size: int = 30, color=BTN):
+        x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
+        self.panel(img, x0, y0, x1, y1, color, 0.85)
+        cv2.rectangle(img, (x0, y0), (x1, y1), WHITE, 2, cv2.LINE_AA)
+        self.text(((x0 + x1) // 2, (y0 + y1) // 2), label, size, WHITE, "mm")
+        self.buttons.append((bid, x0, y0, x1, y1))
+
+    def buttons_right(self, img, specs, y0: int = 10, h: int = 48, right: int = W - 14,
+                      gap: int = 10, size: int = 28, min_w: int = 96) -> int:
+        """Lay out buttons right-to-left. specs = [(id, label, color), ...] in visual
+        left-to-right order. Returns the x of the leftmost button."""
+        x1 = right
+        for bid, label, color in reversed(specs):
+            w = max(min_w, int(self.text_w(label, size)) + 40)
+            self.button(img, bid, x1 - w, y0, x1, y0 + h, label, size, color)
+            x1 -= w + gap
+        return x1 + gap
+
+    def hit(self, x: int, y: int) -> str | None:
+        """Id of the button under canvas point (x, y), or None."""
+        for bid, x0, y0, x1, y1 in reversed(self.buttons):
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return bid
+        return None
+
     # ---- shared widgets ------------------------------------------------------
     def _disclaimer(self, img):
         self.panel(img, 0, H - 44, W, H, BLACK, 0.75)
         self.text((W // 2, H - 22), self.t("disclaimer"), 26, YELLOW, "mm")
 
     def _readout(self, img, sample):
-        """Small current angles in the top-right corner."""
-        x = W - 24
+        """Small current angles in the top-right corner (left of the language button)."""
+        x = W - 128
         head = sample.head if (sample is not None and sample.valid) else None
         rows = []
         if head:
@@ -332,14 +369,27 @@ class UI:
         remaining = max(0.0, dur - el) if dur else None
         frac = min(1.0, el / dur) if dur else 0.0
 
+        self.buttons = []
         # top bar
         self.panel(img, 0, 0, W, 112, BLACK, 0.6)
         if ph in ("prep", "measure", "return") and mv:
             self.text((30, 8), tr("step", i=flow.idx + 1, n=len(MOVEMENTS)), 30, LIGHT)
-            self.text((30, 46), tr(mv.key), 52, WHITE)
+            name = tr(mv.key)
+            self.text((30, 46), name, self.fit_size(name, 52, W - 30 - 340), WHITE)
         else:
             self.text((30, 56), tr("app_title"), 56, WHITE, "lm")
         self._readout(img, sample)
+        self.buttons_right(img, [("lang", tr("btn_lang"), BTN)])
+
+        # clickable controls (same actions as SPACE / S / H)
+        if ph == "home":
+            self.button(img, "start", W - 260, 236, W - 20, 326, tr("btn_start"), 48, BTN_GO)
+            self.button(img, "history", W - 260, 336, W - 20, 388, tr("btn_history"), 28)
+        elif ph == "calib_prep":
+            self.button(img, "next", W - 180, 596, W - 16, 660, tr("btn_next"), 32, BTN_GO)
+        elif ph in ("prep", "measure", "return"):
+            self.button(img, "next", W - 180, 596, W - 16, 660, tr("btn_next"), 32, BTN_GO)
+            self.button(img, "skip", W - 320, 596, W - 192, 660, tr("btn_skip"), 30, BTN_DIM)
 
         warn_shown = False
         if ph == "home":
@@ -401,10 +451,15 @@ class UI:
         """Horizontal bars: grey box = reference, coloured bar = (compensated) ROM."""
         tr = self.t
         img = np.full((H, W, 3), BG, np.uint8)
-        self.text((40, 52), tr("result_title"), 56, WHITE, "lm")
-        self.text((W - 30, 36), tr("result_keys"), 26, LIGHT, "rm")
+        self.buttons = []
+        self.text((40, 46), tr("result_title"), 56, WHITE, "lm")
+        self.buttons_right(img, [("history", tr("btn_history"), BTN),
+                                 ("home", tr("btn_home"), BTN),
+                                 ("again", tr("btn_again"), BTN_GO),
+                                 ("lang", tr("btn_lang"), BTN)])
+        self.text((W - 14, 78), tr("result_keys"), 22, GREY, "rm")
         if saved:
-            self.text((W - 30, 74), tr("saved", p=saved), 22, GREY, "rm")
+            self.text((40, 96), tr("saved", p=saved), 20, GREY, "lm")
 
         by_key = {(r.key if hasattr(r, "key") else r["key"]): r for r in results}
         vals = [mv.ref for mv in MOVEMENTS]
@@ -465,6 +520,7 @@ class UI:
         """2 x 3 grid of small line charts, one per movement."""
         tr = self.t
         img = np.full((H, W, 3), BG, np.uint8)
+        self.buttons = []      # the whole history screen acts as a "back" button
         self.text((40, 44), tr("history_title"), 44, WHITE, "lm")
         self.text((W - 30, 44), tr("history_keys"), 26, LIGHT, "rm")
         if not sessions:

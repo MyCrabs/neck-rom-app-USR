@@ -48,6 +48,8 @@ Other options: `--video file.mp4` (use a video instead of the webcam), `--auto` 
 | F | Fullscreen |
 | Q / ESC | Quit |
 
+The most common actions are also on-screen buttons you can click with the mouse: **EN / 中文** (top-right, every screen), **開始 Start** and **歷史紀錄 History** (home), **下一步 Next** and **跳過 Skip** (during the measurement), and **重新檢測 Again / 回首頁 Home / 歷史紀錄 History** (result screen). On the history screen, click anywhere to go back.
+
 ### Measurement flow
 
 Calibration: look straight ahead for a 3 s preparation and then hold still for 2 s. If the head moves more than 3° or the face is lost, calibration restarts automatically. Then, for each movement: prepare 3 s → measure 7 s (the maximum angle is kept) → return to center 2.5 s. Results are saved to `data/<user>/<timestamp>.json` with `rom_head` (filtered head angle), `rom_head_raw`, `rom_neck` (trunk subtracted), `max_trunk`, `compensation` and the number of valid frames.
