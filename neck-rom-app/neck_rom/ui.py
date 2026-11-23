@@ -439,8 +439,10 @@ class UI:
                 txt = f"{tr('max')} {v:.0f}°" if v is not None else tr("no_data")
                 self.label(img, txt, 72, y=470, color=color_for(v, mv.ref), alpha=0.6)
 
-        if sample is not None and not sample.valid and sample.reason and not warn_shown:
-            self.label(img, tr(sample.reason), 44, y=290, color=YELLOW, alpha=0.7)
+        if sample is not None and not warn_shown:
+            msg = sample.reason if not sample.valid else getattr(sample, "hint", None)
+            if msg:
+                self.label(img, tr(msg), 44, y=290, color=YELLOW, alpha=0.7)
 
         if ph in ("prep", "measure", "return"):
             self.text((W // 2, H - 44 - 22), tr("space_next"), 26, LIGHT, "mm", stroke=2)

@@ -4,6 +4,7 @@ This module has no UI code so it can be unit-tested without a camera.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -42,7 +43,13 @@ T_MEASURE = 7.0
 T_RETURN = 2.5
 
 COMP_THRESHOLD_DEG = 10.0      # trunk moved more than this -> compensation warning
-JUMP_REJECT_DEG = 35.0         # one-frame jump larger than this -> outlier frame
+COMP_MIN_FRAMES = 5            # ... for at least this many frames -> compensation detected
+# MediaPipe Pose infers shoulder depth partly from the head, so a head-only turn
+# makes the shoulder angles drift 15-30 deg. The guards below reject that.
+TRUNK_DEADBAND_DEG = 8.0       # trunk angles below this are treated as 0
+TRUNK_MAX_FRAC = 0.5           # never subtract more than this fraction of the head angle
+WIDTH_TOL = 0.02               # tolerance on the 2D shoulder-width check for rotation
+JUMP_REJECT_DEG = 35.0        # one-frame jump larger than this -> outlier frame
 CALIB_MAX_STD_DEG = 3.0        # head must be still during calibration
 MIN_VALID_FRAMES = 8
 
@@ -54,7 +61,9 @@ class Sample:
     head: dict | None = None        # filtered relative angles {yaw,pitch,roll}
     head_raw: dict | None = None    # unfiltered relative angles
     trunk: dict | None = None       # filtered relative trunk {yaw, roll}
+    shoulder_ratio: float | None = None  # 2D shoulder width / width at calibration
     reason: str | None = None       # i18n key when invalid
+    hint: str | None = None         # i18n key shown on valid frames (e.g. "q_too_far")
 
 
 class AngleProcessor:
@@ -63,8 +72,10 @@ class AngleProcessor:
     def __init__(self):
         self.R0 = None
         self.trunk0 = None
+        self.width0 = None
         self._f = {k: OneEuro(min_cutoff=1.2, beta=0.03) for k in AXES}
         self._ft = {k: OneEuro(min_cutoff=1.0, beta=0.02) for k in ("yaw", "roll")}
+        self._fw = OneEuro(min_cutoff=1.0, beta=0.0)
         self._prev = None
         self._rejects = 0
 
@@ -73,19 +84,19 @@ class AngleProcessor:
         return self.R0 is not None
 
     def reset_filters(self):
-        for f in list(self._f.values()) + list(self._ft.values()):
+        for f in list(self._f.values()) + list(self._ft.values()) + [self._fw]:
             f.reset()
         self._prev, self._rejects = None, 0
 
-    def set_calibration(self, R0, trunk0):
-        self.R0, self.trunk0 = R0, trunk0
+    def set_calibration(self, R0, trunk0, width0=None):
+        self.R0, self.trunk0, self.width0 = R0, trunk0, width0
         self.reset_filters()
 
     def update(self, m, t: float) -> Sample:
         if not m.face_found or m.R is None:
             return Sample(t, False, reason=m.quality_msg or "q_no_face")
-        if m.quality_msg == "q_too_far":
-            return Sample(t, False, reason="q_too_far")
+        # too far is only a hint: the frame is still measured
+        hint = "q_too_far" if m.quality_msg == "q_too_far" else None
 
         if self.R0 is not None:
             y, p, r = g.relative_angles(m.R, self.R0)
@@ -98,19 +109,23 @@ class AngleProcessor:
             jump = max(abs(raw[k] - self._prev[k]) for k in AXES)
             if jump > JUMP_REJECT_DEG:
                 self._rejects += 1
-                return Sample(t, False, head_raw=raw, reason="q_unstable")
+                return Sample(t, False, head_raw=raw, reason="q_unstable", hint=hint)
         self._rejects = 0
 
         head = {k: self._f[k](raw[k], t) for k in AXES}
         self._prev = head
 
-        trunk = None
+        trunk, ratio = None, None
         if m.trunk is not None:
             ty, tr = m.trunk
             if self.trunk0 is not None:
                 ty, tr = g.wrap_deg(ty - self.trunk0[0]), g.wrap_deg(tr - self.trunk0[1])
             trunk = {"yaw": self._ft["yaw"](ty, t), "roll": self._ft["roll"](tr, t)}
-        return Sample(t, True, head=head, head_raw=raw, trunk=trunk)
+            sw = m.shoulder_w   # pixels; only the ratio to calibration is used
+            if sw is not None and self.width0:
+                ratio = self._fw(sw / self.width0, t)
+        return Sample(t, True, head=head, head_raw=raw, trunk=trunk,
+                      shoulder_ratio=ratio, hint=hint)
 
 
 @dataclass
@@ -119,17 +134,20 @@ class MovementResult:
     rom_head: float | None = None       # max head angle (filtered), = paper's ROM
     rom_head_raw: float | None = None   # max of unfiltered angle (for ablation)
     rom_neck: float | None = None       # max (head - trunk) = compensated neck ROM
-    max_trunk: float | None = None      # largest trunk movement in the same direction
+    max_trunk: float | None = None      # largest trunk movement actually subtracted
+    max_trunk_raw: float | None = None  # largest Pose trunk angle before the guards
     compensation: bool = False
     valid_frames: int = 0
     total_frames: int = 0
     trunk_frames: int = 0
+    comp_frames: int = 0                # frames with confirmed trunk > COMP_THRESHOLD_DEG
+    rejected: dict = field(default_factory=dict)   # rejection reason -> frame count
     skipped: bool = False
 
     @property
     def rom(self) -> float | None:
-        """Value to report: compensated if trunk data was available, else head."""
-        if self.rom_neck is not None:
+        """Value to report: neck (head - trunk) only if compensation was detected."""
+        if self.compensation and self.rom_neck is not None:
             return self.rom_neck
         return self.rom_head
 
@@ -152,6 +170,8 @@ class MovementRecorder:
         mv, res = self.mv, self.res
         res.total_frames += 1
         if not s.valid:
+            key = s.reason or "unknown"
+            res.rejected[key] = res.rejected.get(key, 0) + 1
             return
         res.valid_frames += 1
         head = mv.sign * s.head[mv.axis]
@@ -163,14 +183,36 @@ class MovementRecorder:
         self.trunk_now = None
         self.current_neck = None
         if mv.comp_axis and s.trunk is not None:
-            trunk = mv.sign * s.trunk[mv.comp_axis]
+            raw_trunk = mv.sign * s.trunk[mv.comp_axis]
+            trunk = self._confirmed_trunk(raw_trunk, head, s.shoulder_ratio)
             neck = head - trunk
             self.trunk_now, self.current_neck = trunk, neck
             res.trunk_frames += 1
+            res.max_trunk_raw = (raw_trunk if res.max_trunk_raw is None
+                                 else max(res.max_trunk_raw, raw_trunk))
             res.max_trunk = trunk if res.max_trunk is None else max(res.max_trunk, trunk)
             res.rom_neck = neck if res.rom_neck is None else max(res.rom_neck, neck)
             if trunk > COMP_THRESHOLD_DEG:
-                res.compensation = True
+                res.comp_frames += 1
+                if res.comp_frames >= COMP_MIN_FRAMES:
+                    res.compensation = True
+
+    def _confirmed_trunk(self, trunk: float, head: float, ratio: float | None) -> float:
+        """Trunk angle that is safe to subtract from the head angle (>= 0)."""
+        if trunk < TRUNK_DEADBAND_DEG:
+            return 0.0
+        if self.mv.comp_axis == "yaw":
+            # A real trunk turn also narrows the 2D shoulder line (width ~ cos).
+            # Count only as much rotation as that narrowing supports; a width
+            # change within WIDTH_TOL counts as none. Using the width-implied
+            # angle (not an on/off gate) keeps one lagging frame from dropping
+            # the trunk to 0 and making rom_neck jump to the full head angle.
+            if ratio is None or ratio > 1.0 - WIDTH_TOL:
+                return 0.0
+            trunk = min(trunk, math.degrees(math.acos(max(0.0, ratio))))
+            if trunk < TRUNK_DEADBAND_DEG:
+                return 0.0
+        return min(trunk, TRUNK_MAX_FRAC * max(head, 0.0))
 
     def finish(self) -> MovementResult:
         res = self.res
@@ -178,10 +220,12 @@ class MovementRecorder:
             res.rom_head = res.rom_neck = None
         elif res.trunk_frames < 0.5 * res.valid_frames:
             res.rom_neck = None   # not enough shoulder data -> no compensation
-        for k in ("rom_head", "rom_head_raw", "rom_neck", "max_trunk"):
+        if res.rom_neck is None:
+            res.compensation = False
+        for k in ("rom_head", "rom_head_raw", "rom_neck", "max_trunk", "max_trunk_raw"):
             v = getattr(res, k)
             if v is not None:
-                setattr(res, k, round(float(max(0.0, v) if k != "max_trunk" else v), 1))
+                setattr(res, k, round(float(max(0.0, v) if k.startswith("rom") else v), 1))
         return res
 
 
@@ -199,7 +243,7 @@ class Flow:
         self.results: list[MovementResult] = []
         self.recorder: MovementRecorder | None = None
         self.message: str | None = None   # transient i18n key
-        self._calib_R, self._calib_trunk, self._calib_abs = [], [], []
+        self._calib_R, self._calib_trunk, self._calib_abs, self._calib_width = [], [], [], []
         self.started_at: datetime | None = None
         self.finished = False
 
@@ -226,7 +270,7 @@ class Flow:
         self._start_calib(t)
 
     def _start_calib(self, t):
-        self._calib_R, self._calib_trunk, self._calib_abs = [], [], []
+        self._calib_R, self._calib_trunk, self._calib_abs, self._calib_width = [], [], [], []
         self._go("calib_prep", t)
 
     def next(self, t):
@@ -257,6 +301,9 @@ class Flow:
                 self._calib_abs.append(g.angles_from_matrix(m.R))
                 if m.trunk is not None:
                     self._calib_trunk.append(m.trunk)
+                    sw = m.shoulder_w
+                    if sw:
+                        self._calib_width.append(sw)
             if el >= T_CALIB:
                 self._finish_calib(t)
         elif ph == "prep" and el >= T_PREP:
@@ -284,7 +331,10 @@ class Flow:
         trunk0 = None
         if len(self._calib_trunk) >= MIN_VALID_FRAMES // 2:
             trunk0 = tuple(np.median(np.array(self._calib_trunk), axis=0))
-        self.proc.set_calibration(R0, trunk0)
+        width0 = None
+        if len(self._calib_width) >= MIN_VALID_FRAMES // 2:
+            width0 = float(np.median(self._calib_width))
+        self.proc.set_calibration(R0, trunk0, width0)
         self.message = None
         self._go("prep", t)
 

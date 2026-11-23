@@ -115,15 +115,19 @@ def shot_key(flow, now, screen):
 
 def print_summary(flow):
     print("\n=== Results ===")
-    print(f"{'movement':<11}{'rom':>7}{'head':>7}{'raw':>7}{'neck':>7}{'trunk':>7}  comp  frames")
+    print(f"{'movement':<11}{'rom':>7}{'head':>7}{'raw':>7}{'neck':>7}{'trunk':>7}"
+          f"  comp  {'frames':<20}rejected")
     fmt = lambda v: "   -  " if v is None else f"{v:6.1f} "  # noqa: E731
     for r in flow.results:
         if r.skipped:
             print(f"{r.key:<11}  (skipped)")
             continue
+        frames = f"{r.valid_frames}/{r.total_frames} (trunk {r.trunk_frames})"
+        rejected = " ".join(f"{k.removeprefix('q_')}:{n}"
+                            for k, n in sorted(r.rejected.items())) or "-"
         print(f"{r.key:<11}{fmt(r.rom)}{fmt(r.rom_head)}{fmt(r.rom_head_raw)}{fmt(r.rom_neck)}"
               f"{fmt(r.max_trunk)}  {'YES ' if r.compensation else 'no  '}  "
-              f"{r.valid_frames}/{r.total_frames} (trunk {r.trunk_frames})")
+              f"{frames:<20}{rejected}")
 
 
 def _rel(p: Path) -> str:

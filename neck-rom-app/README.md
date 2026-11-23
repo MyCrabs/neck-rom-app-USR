@@ -52,7 +52,9 @@ The most common actions are also on-screen buttons you can click with the mouse:
 
 ### Measurement flow
 
-Calibration: look straight ahead for a 3 s preparation and then hold still for 2 s. If the head moves more than 3° or the face is lost, calibration restarts automatically. Then, for each movement: prepare 3 s → measure 7 s (the maximum angle is kept) → return to center 2.5 s. Results are saved to `data/<user>/<timestamp>.json` with `rom_head` (filtered head angle), `rom_head_raw`, `rom_neck` (trunk subtracted), `max_trunk`, `compensation` and the number of valid frames.
+Calibration: look straight ahead for a 3 s preparation and then hold still for 2 s. If the head moves more than 3° or the face is lost, calibration restarts automatically. Then, for each movement: prepare 3 s → measure 7 s (the maximum angle is kept) → return to center 2.5 s. Results are saved to `data/<user>/<timestamp>.json` with `rom_head` (filtered head angle), `rom_head_raw`, `rom_neck` (trunk subtracted), `max_trunk` (trunk actually subtracted), `max_trunk_raw` (Pose angle before the guards), `compensation`, the number of valid frames and `rejected` (rejected frames per reason). `rom` is `rom_neck` only when compensation was detected, otherwise `rom_head`.
+
+Trunk compensation guards (MediaPipe Pose partly infers shoulder depth from the head, so a head-only turn can make the shoulders appear to move 15–30°): trunk angles below 8° are ignored; for rotation, only as much trunk turn is counted as the 2D shoulder width narrowing supports (`acos(width / width_at_calibration)`, ignored if the width shrank less than 2%); and never more than half of the head angle is subtracted. "Move closer" is only a hint (based on forehead-to-chin face height); it does not reject frames.
 
 ## 3. Checking the angle signs (do this first with a real webcam)
 

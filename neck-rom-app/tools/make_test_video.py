@@ -9,8 +9,9 @@ Two modes:
   sine: plain back-and-forth roll of +-amp degrees.
 
 Because the WHOLE image rotates, the shoulders rotate too. With Pose enabled the
-app should therefore report rom_head ~ amp, rom_neck ~ 0 and compensation=True
-for the tilts (this also checks the trunk_roll sign). Use --no-pose in the app
+app should therefore report rom_head ~ amp, compensation=True and rom_neck ~ amp/2
+for the tilts (the trunk subtraction is capped at half the head angle; this also
+checks the trunk_roll sign). Use --no-pose in the app
 to see only the head angle.
 
     python tools/make_test_video.py                 # -> test.mp4
